@@ -121,6 +121,8 @@ class ActiveSLAMEnv(gym.Env):
         self._total_explored = 0
         self._scan_time_ms = 0.0
         self._slam_time_ms = 0.0
+        self.fig = None
+        self.axes = None
 
     def _generate_walls(self, rng: np.random.Generator):
         """Generate arena boundary + random internal obstacles."""
@@ -305,22 +307,32 @@ class ActiveSLAMEnv(gym.Env):
         import matplotlib.pyplot as plt
         import matplotlib.patches as patches
 
-        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        # Create persistent figure once
+        if self.fig is None:
+            # Set background color style
+            plt.style.use('dark_background')
+            self.fig, self.axes = plt.subplots(1, 2, figsize=(14, 6))
+            # Enable interactive mode so window stays responsive
+            plt.ion()
+            if self.render_mode == "human":
+                plt.show(block=False)
+
+        ax = self.axes[0]
+        ax2 = self.axes[1]
+
+        # Clear axes to redraw
+        ax.cla()
+        ax2.cla()
 
         # --- Left: Arena with robot + rays ---
-        ax = axes[0]
         ax.set_xlim(-5, self.arena_size + 5)
         ax.set_ylim(-5, self.arena_size + 5)
         ax.set_aspect("equal")
-        ax.set_title(f"Arena (step {self._step_count})", fontsize=12)
         ax.set_facecolor("#0a0a1a")
 
         # Draw walls
         for x1, y1, x2, y2 in self._walls:
-            ax.plot([x1, x2], [y1, y2], color="#ff6b6b", linewidth=2, alpha=0.8)
-
-        # Draw robot
-        ax.plot(self._robot_x, self._robot_y, "o", color="#00ff88", markersize=8, zorder=5)
+            ax.plot([x1, x2], [y1, y2], color="#ff6b6b", linewidth=2.5, alpha=0.9)
 
         # Draw LiDAR rays (subset for clarity)
         lidar = self.raycaster.scan(self._robot_x, self._robot_y, self._robot_theta)
@@ -330,31 +342,64 @@ class ActiveSLAMEnv(gym.Env):
             end_y = self._robot_y + lidar[i] * np.sin(angle)
             ax.plot(
                 [self._robot_x, end_x], [self._robot_y, end_y],
-                color="#4ecdc4", alpha=0.3, linewidth=0.5,
+                color="#00f0ff", alpha=0.25, linewidth=0.6,
             )
 
-        # --- Right: Coverage map ---
-        ax2 = axes[1]
-        ax2.imshow(
-            self._coverage, origin="lower", cmap="inferno",
-            extent=[0, self.arena_size, 0, self.arena_size],
-        )
+        # Draw SLAM particle cloud if enabled
+        if self.use_slam:
+            ax.scatter(
+                self.slam.particles[:, 0], self.slam.particles[:, 1],
+                color="#bd93f9", s=4, alpha=0.5, zorder=4, label="Particles"
+            )
+
+        # Draw robot pose marker
+        ax.plot(self._robot_x, self._robot_y, "o", color="#00ff88", markersize=10, zorder=5)
+        # Draw head heading line
+        hx = self._robot_x + 3.0 * np.cos(self._robot_theta)
+        hy = self._robot_y + 3.0 * np.sin(self._robot_theta)
+        ax.plot([self._robot_x, hx], [self._robot_y, hy], color="#00ff88", linewidth=2.5, zorder=6)
+
         coverage_pct = self._total_explored / (self.map_res ** 2) * 100
-        ax2.set_title(f"Coverage: {coverage_pct:.1f}%", fontsize=12)
+        ax.set_title(f"Arena & Particles (Explored: {coverage_pct:.1f}%)", fontsize=11, fontweight="bold")
+
+        # --- Right: SLAM or Coverage Map ---
+        if self.use_slam:
+            # Convert log-odds representation to occupancy probabilities [0, 1] for display
+            # occupancy_prob = 1 / (1 + exp(-log_odds))
+            slam_prob = 1.0 / (1.0 + np.exp(-self.slam.map))
+            
+            im = ax2.imshow(
+                slam_prob, origin="lower", cmap="inferno",
+                extent=[0, self.arena_size, 0, self.arena_size],
+                vmin=0.0, vmax=1.0,
+            )
+            ax2.set_title(f"VectorSLAM Real-time Grid Map", fontsize=11, fontweight="bold")
+        else:
+            im = ax2.imshow(
+                self._coverage, origin="lower", cmap="inferno",
+                extent=[0, self.arena_size, 0, self.arena_size],
+                vmin=0.0, vmax=1.0,
+            )
+            ax2.set_title(f"Occupancy Coverage Map", fontsize=11, fontweight="bold")
+
         ax2.set_aspect("equal")
 
-        plt.tight_layout()
+        self.fig.tight_layout()
 
         if self.render_mode == "rgb_array":
-            fig.canvas.draw()
-            data = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
-            data = data.reshape(fig.canvas.get_width_height()[::-1] + (4,))
-            plt.close(fig)
+            self.fig.canvas.draw()
+            data = np.frombuffer(self.fig.canvas.buffer_rgba(), dtype=np.uint8)
+            data = data.reshape(self.fig.canvas.get_width_height()[::-1] + (4,))
             return data[:, :, :3]
         elif self.render_mode == "human":
-            plt.show(block=False)
-            plt.pause(0.01)
-            plt.close(fig)
+            self.fig.canvas.draw()
+            self.fig.canvas.flush_events()
+            plt.pause(0.001)
 
     def close(self):
-        pass
+        """Close visualization figure."""
+        if self.fig is not None:
+            import matplotlib.pyplot as plt
+            plt.close(self.fig)
+            self.fig = None
+            self.axes = None
