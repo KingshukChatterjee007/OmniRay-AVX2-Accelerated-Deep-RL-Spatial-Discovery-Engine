@@ -53,7 +53,7 @@ OmniRay/
 │   ├── src/
 │   │   ├── bindings.cpp        # pybind11 wrapper definitions
 │   │   ├── raycaster.cpp       # AVX2 8-lane parallel SIMD implementation
-│   │   └── raycaster.h         # C++ raycaster API header
++   │   └── raycaster.h         # C++ raycaster API header
 │   └── test_raycaster.py       # C++ correctness and speed validation
 │
 ├── requirements.txt            # Package dependencies
