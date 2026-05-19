@@ -9,13 +9,14 @@ Features:
   - Custom Multi-Input SLAM Feature Extractor (CNN + MLP fusion).
   - Pluggable support for VectorSLAM observations.
   - CUDA GPU-accelerated training automatically enabled if available.
-  - Fully configurable via command line flags.
+  - Configuration hyperparams fully loaded from config.yaml.
 """
 
 import argparse
 import os
 import time
 import sys
+import yaml
 import numpy as np
 import torch as th
 from stable_baselines3 import PPO
@@ -39,19 +40,42 @@ class SLAMFeaturesExtractor(BaseFeaturesExtractor):
       - slam_pose (1D, optional): MLP branch
     """
 
-    def __init__(self, observation_space, features_dim: int = 256):
+    def __init__(self, observation_space, features_dim: int = 256, cnn_config: dict = None, mlp_config: dict = None):
         super().__init__(observation_space, features_dim)
         
         extractors = {}
         total_concat_dim = 0
 
+        # Use defaults if config sections are missing
+        if cnn_config is None:
+            cnn_config = {
+                "coverage_channels": [16, 32],
+                "coverage_kernel": 3,
+                "coverage_stride": 2,
+                "coverage_padding": 1,
+                "slam_channels": [16, 32],
+                "slam_kernel": 3,
+                "slam_stride": 2,
+                "slam_padding": 1
+            }
+        if mlp_config is None:
+            mlp_config = {
+                "lidar_dim": 64,
+                "pose_dim": 32,
+                "slam_pose_dim": 32
+            }
+
         # 1. 2D Map Branch (Coverage Map)
         cov_shape = observation_space.spaces["coverage_map"].shape
-        # Input shape: (1, H, W) for CNN
+        cov_ch = cnn_config.get("coverage_channels", [16, 32])
+        cov_k = cnn_config.get("coverage_kernel", 3)
+        cov_s = cnn_config.get("coverage_stride", 2)
+        cov_p = cnn_config.get("coverage_padding", 1)
+
         extractors["coverage_map"] = th.nn.Sequential(
-            th.nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1),
+            th.nn.Conv2d(1, cov_ch[0], kernel_size=cov_k, stride=cov_s, padding=cov_p),
             th.nn.ReLU(),
-            th.nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
+            th.nn.Conv2d(cov_ch[0], cov_ch[1], kernel_size=cov_k, stride=cov_s, padding=cov_p),
             th.nn.ReLU(),
             th.nn.Flatten(),
         )
@@ -67,10 +91,15 @@ class SLAMFeaturesExtractor(BaseFeaturesExtractor):
         # 2. 2D Map Branch (SLAM Map, if available)
         if "slam_map" in observation_space.spaces:
             slam_map_shape = observation_space.spaces["slam_map"].shape
+            slam_ch = cnn_config.get("slam_channels", [16, 32])
+            slam_k = cnn_config.get("slam_kernel", 3)
+            slam_s = cnn_config.get("slam_stride", 2)
+            slam_p = cnn_config.get("slam_padding", 1)
+
             extractors["slam_map"] = th.nn.Sequential(
-                th.nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1),
+                th.nn.Conv2d(1, slam_ch[0], kernel_size=slam_k, stride=slam_s, padding=slam_p),
                 th.nn.ReLU(),
-                th.nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
+                th.nn.Conv2d(slam_ch[0], slam_ch[1], kernel_size=slam_k, stride=slam_s, padding=slam_p),
                 th.nn.ReLU(),
                 th.nn.Flatten(),
             )
@@ -85,25 +114,25 @@ class SLAMFeaturesExtractor(BaseFeaturesExtractor):
         # 3. 1D Vector Branches (LiDAR and Poses)
         lidar_dim = observation_space.spaces["lidar"].shape[0]
         extractors["lidar"] = th.nn.Sequential(
-            th.nn.Linear(lidar_dim, 64),
+            th.nn.Linear(lidar_dim, mlp_config.get("lidar_dim", 64)),
             th.nn.ReLU(),
         )
-        total_concat_dim += 64
+        total_concat_dim += mlp_config.get("lidar_dim", 64)
 
         pose_dim = observation_space.spaces["pose"].shape[0]
         extractors["pose"] = th.nn.Sequential(
-            th.nn.Linear(pose_dim, 32),
+            th.nn.Linear(pose_dim, mlp_config.get("pose_dim", 32)),
             th.nn.ReLU(),
         )
-        total_concat_dim += 32
+        total_concat_dim += mlp_config.get("pose_dim", 32)
 
         if "slam_pose" in observation_space.spaces:
             slam_pose_dim = observation_space.spaces["slam_pose"].shape[0]
             extractors["slam_pose"] = th.nn.Sequential(
-                th.nn.Linear(slam_pose_dim, 32),
+                th.nn.Linear(slam_pose_dim, mlp_config.get("slam_pose_dim", 32)),
                 th.nn.ReLU(),
             )
-            total_concat_dim += 32
+            total_concat_dim += mlp_config.get("slam_pose_dim", 32)
 
         self.extractors = th.nn.ModuleDict(extractors)
 
@@ -135,13 +164,51 @@ class SLAMFeaturesExtractor(BaseFeaturesExtractor):
 
 def train():
     parser = argparse.ArgumentParser(description="OmniRay PPO Active SLAM Training")
-    parser.add_argument("--total-steps", type=int, default=50000, help="Total timesteps to train")
-    parser.add_argument("--num-rays", type=int, default=128, help="Number of rays for LiDAR scan")
-    parser.add_argument("--map-res", type=int, default=50, help="Resolution of the mapping grid")
+    parser.add_argument("--config", type=str, default="config.yaml", help="Path to config.yaml file")
+    parser.add_argument("--total-steps", type=int, default=None, help="Total timesteps to train (overrides config)")
+    parser.add_argument("--num-rays", type=int, default=None, help="Number of rays for LiDAR scan (overrides config)")
+    parser.add_argument("--map-res", type=int, default=None, help="Resolution of the mapping grid (overrides config)")
     parser.add_argument("--disable-slam", action="store_true", help="Disable the VectorSLAM matching engine")
     parser.add_argument("--save-path", type=str, default="active_slam_ppo", help="Path to save trained agent")
-    parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate for PPO")
+    parser.add_argument("--lr", type=float, default=None, help="Learning rate for PPO (overrides config)")
+    parser.add_argument("--ent-coef", type=float, default=None, help="Entropy coefficient for PPO (overrides config)")
+    
+    # Ablation-specific overrides
+    parser.add_argument("--no-noise", action="store_true", help="Disable physical environment noise for ablation")
+    parser.add_argument("--reward-exploration", type=float, default=None, help="Override exploration reward weight")
+    parser.add_argument("--reward-time", type=float, default=None, help="Override time penalty reward weight")
+    parser.add_argument("--reward-collision", type=float, default=None, help="Override collision penalty weight")
+    parser.add_argument("--reward-frontier", type=float, default=None, help="Override frontier exploration shaping weight")
     args = parser.parse_args()
+
+    # Load configuration file
+    config = {}
+    if os.path.exists(args.config):
+        print(f"  Loading hyperparameters from config file: {args.config}...")
+        with open(args.config, "r") as f:
+            config = yaml.safe_load(f)
+    else:
+        print(f"  [WARNING] Config file not found at: {args.config}. Using hardcoded default parameters.")
+
+    # Extract configs or fallback to defaults
+    env_config = config.get("env", {})
+    network_config = config.get("network", {})
+    ppo_config = config.get("ppo", {})
+
+    # Apply command line overrides if provided, otherwise use config/default
+    num_rays = args.num_rays if args.num_rays is not None else env_config.get("num_rays", 128)
+    map_res = args.map_res if args.map_res is not None else env_config.get("map_resolution", 50)
+    use_slam = not args.disable_slam if args.disable_slam else env_config.get("use_slam", True)
+    total_steps = args.total_steps if args.total_steps is not None else ppo_config.get("total_timesteps", 50000)
+    lr = args.lr if args.lr is not None else ppo_config.get("learning_rate", 3e-4)
+    ent_coef = args.ent_coef if args.ent_coef is not None else ppo_config.get("ent_coef", 0.01)
+    
+    # Environment noise & reward weights overrides
+    real_world_noise = False if args.no_noise else env_config.get("real_world_noise", True)
+    rew_exp = args.reward_exploration if args.reward_exploration is not None else env_config.get("reward_exploration", 1.0)
+    rew_time = args.reward_time if args.reward_time is not None else env_config.get("reward_time_penalty", 0.01)
+    rew_col = args.reward_collision if args.reward_collision is not None else env_config.get("reward_collision_penalty", 0.1)
+    rew_front = args.reward_frontier if args.reward_frontier is not None else env_config.get("reward_frontier", 0.1)
 
     print("=" * 70)
     print("  OmniRay Active SLAM Deep RL Trainer")
@@ -149,41 +216,59 @@ def train():
     
     device = "cuda" if th.cuda.is_available() else "cpu"
     print(f"  Device:           {device.upper()}")
-    print(f"  LiDAR rays:       {args.num_rays}")
-    print(f"  Map Resolution:   {args.map_res}x{args.map_res}")
-    print(f"  SLAM engine:      {'DISABLED' if args.disable_slam else 'ENABLED'}")
-    print(f"  Total Steps:      {args.total_steps}")
-    print(f"  Learning Rate:    {args.lr}")
+    print(f"  LiDAR rays:       {num_rays}")
+    print(f"  Map Resolution:   {map_res}x{map_res}")
+    print(f"  SLAM engine:      {'ENABLED' if use_slam else 'DISABLED'}")
+    print(f"  Total Steps:      {total_steps}")
+    print(f"  Learning Rate:    {lr}")
+    print(f"  Entropy Coeff:    {ent_coef}")
+    print(f"  Physical Noise:   {'ENABLED' if real_world_noise else 'DISABLED'}")
+    print(f"  Explor Reward:    {rew_exp}")
+    print(f"  Time Penalty:     {rew_time}")
+    print(f"  Colli Penalty:    {rew_col}")
+    print(f"  Front Reward:     {rew_front}")
     print("-" * 70)
 
     # Initialize environment
     env = ActiveSLAMEnv(
         backend="numpy",
-        num_rays=args.num_rays,
-        map_resolution=args.map_res,
-        use_slam=not args.disable_slam,
-        max_steps=200,
+        num_rays=num_rays,
+        map_resolution=map_res,
+        use_slam=use_slam,
+        max_steps=env_config.get("max_steps", 200),
+        real_world_noise=real_world_noise,
+        reward_exploration=rew_exp,
+        reward_time_penalty=rew_time,
+        reward_collision_penalty=rew_col,
+        reward_frontier=rew_front,
     )
 
     # Setup custom features extractor arguments
     policy_kwargs = dict(
         features_extractor_class=SLAMFeaturesExtractor,
-        features_extractor_kwargs=dict(features_dim=256),
-        net_arch=dict(pi=[128, 64], vf=[128, 64]),  # compact networks for policy and value
+        features_extractor_kwargs=dict(
+            features_dim=network_config.get("features_dim", 256),
+            cnn_config=network_config.get("cnn", None),
+            mlp_config=network_config.get("mlp", None),
+        ),
+        net_arch=dict(
+            pi=network_config.get("pi_arch", [128, 64]),
+            vf=network_config.get("vf_arch", [128, 64]),
+        ),
     )
 
     # Instantiate PPO Agent
     model = PPO(
         "MultiInputPolicy",
         env,
-        learning_rate=args.lr,
-        n_steps=2048,
-        batch_size=64,
-        n_epochs=10,
-        gamma=0.99,
-        gae_lambda=0.95,
-        clip_range=0.2,
-        ent_coef=0.01,
+        learning_rate=lr,
+        n_steps=ppo_config.get("n_steps", 2048),
+        batch_size=ppo_config.get("batch_size", 64),
+        n_epochs=ppo_config.get("n_epochs", 10),
+        gamma=ppo_config.get("gamma", 0.99),
+        gae_lambda=ppo_config.get("gae_lambda", 0.95),
+        clip_range=ppo_config.get("clip_range", 0.2),
+        ent_coef=ent_coef,
         policy_kwargs=policy_kwargs,
         verbose=1,
         device=device,
@@ -194,7 +279,7 @@ def train():
     t0 = time.time()
     
     try:
-        model.learn(total_timesteps=args.total_steps)
+        model.learn(total_timesteps=total_steps)
         duration = time.time() - t0
         print("\n" + "=" * 70)
         print("  Training Completed Successfully! [SUCCESS]")

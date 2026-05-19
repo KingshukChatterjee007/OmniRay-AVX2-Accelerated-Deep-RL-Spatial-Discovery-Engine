@@ -249,7 +249,7 @@ def evaluate_agent(model_path: str, save_dir: str, num_rays: int, map_res: int, 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="OmniRay PPO Robust Evaluation and Diagnostic Recorder")
     parser.add_argument("--model-path", type=str, default="active_slam_ppo.zip", help="Path to the trained PPO zip file")
-    parser.add_argument("--save-dir", type=str, default=r"C:\Users\91704\.gemini\antigravity\brain\567d6900-3294-4450-baf0-b878fcde7b39", help="Directory to save diagnostic reports")
+    parser.add_argument("--save-dir", type=str, default="results", help="Directory to save diagnostic reports")
     parser.add_argument("--num-rays", type=int, default=128, help="Number of rays for LiDAR scan")
     parser.add_argument("--map-res", type=int, default=50, help="Resolution of the mapping grid")
     parser.add_argument("--steps", type=int, default=150, help="Number of steps in the evaluation episode")

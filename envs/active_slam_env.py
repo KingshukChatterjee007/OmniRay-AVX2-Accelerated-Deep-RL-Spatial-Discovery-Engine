@@ -63,6 +63,10 @@ class ActiveSLAMEnv(gym.Env):
         use_slam: bool = True,
         slam_num_particles: int = 50,
         real_world_noise: bool = True,
+        reward_exploration: float = 1.0,
+        reward_time_penalty: float = 0.01,
+        reward_collision_penalty: float = 0.1,
+        reward_frontier: float = 0.1,
     ):
         super().__init__()
 
@@ -77,6 +81,12 @@ class ActiveSLAMEnv(gym.Env):
         self.use_slam = use_slam
         self.slam_num_particles = slam_num_particles
         self.real_world_noise = real_world_noise
+        
+        # Expose reward weights for ablation studies
+        self.reward_exploration = reward_exploration
+        self.reward_time_penalty = reward_time_penalty
+        self.reward_collision_penalty = reward_collision_penalty
+        self.reward_frontier = reward_frontier
 
         # Create raycaster
         self.raycaster = create_raycaster(backend, num_rays, max_range)
@@ -344,10 +354,10 @@ class ActiveSLAMEnv(gym.Env):
 
         # Reward
         reward = 0.0
-        reward += new_cells * 1.0          # exploration bonus
-        reward -= 0.01                      # time penalty
+        reward += new_cells * self.reward_exploration          # exploration bonus
+        reward -= self.reward_time_penalty                      # time penalty
         if collision:
-            reward -= 0.1                   # collision penalty
+            reward -= self.reward_collision_penalty             # collision penalty
 
         # Advanced Frontier-Based Exploration Reward (Shaping Reward)
         # Pulls the robot dynamically towards boundaries between explored and unexplored zones
@@ -356,7 +366,7 @@ class ActiveSLAMEnv(gym.Env):
             # Positive reward for getting closer to a frontier cell, penalty for moving away
             # Max change is capped at the grid size to avoid huge spikes when map layout changes
             dist_change = np.clip(self._prev_frontier_dist - current_frontier_dist, -5.0, 5.0)
-            reward += float(dist_change * 0.1)  # Scale factor of 0.1 (e.g. up to +0.5 reward)
+            reward += float(dist_change * self.reward_frontier)  # Dynamic scaling
         self._prev_frontier_dist = current_frontier_dist
 
         # Termination
