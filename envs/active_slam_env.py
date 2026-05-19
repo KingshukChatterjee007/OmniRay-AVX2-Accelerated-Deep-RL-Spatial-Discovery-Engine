@@ -142,6 +142,33 @@ class ActiveSLAMEnv(gym.Env):
         # 3. Clip to valid physical range [0.0, max_range]
         return np.clip(lidar_noisy, 0.0, self.max_range)
 
+    def _get_min_dist_to_frontier(self) -> float:
+        """Calculate the distance from the robot to the nearest frontier cell (fully vectorized)."""
+        cov = self._coverage
+        unexplored = (cov == 0)
+        
+        # Shift unexplored grid in 4 directions to find which explored cells touch unexplored ones
+        has_unexplored_neighbor = (
+            np.pad(unexplored[:-1, :], ((1, 0), (0, 0)), constant_values=False) |
+            np.pad(unexplored[1:, :], ((0, 1), (0, 0)), constant_values=False) |
+            np.pad(unexplored[:, :-1], ((0, 0), (1, 0)), constant_values=False) |
+            np.pad(unexplored[:, 1:], ((0, 0), (0, 1)), constant_values=False)
+        )
+        
+        # Frontier cells: explored cells (1) with at least one unexplored (0) neighbor
+        frontiers = (cov == 1) & has_unexplored_neighbor
+        frontier_ys, frontier_xs = np.where(frontiers)
+        
+        if len(frontier_xs) > 0:
+            cell_size = self.arena_size / self.map_res
+            # Map grid index to world coordinates (cell center)
+            frontier_x_coords = (frontier_xs + 0.5) * cell_size
+            frontier_y_coords = (frontier_ys + 0.5) * cell_size
+            
+            dists = np.hypot(frontier_x_coords - self._robot_x, frontier_y_coords - self._robot_y)
+            return float(np.min(dists))
+        return 0.0
+
     def _generate_walls(self, rng: np.random.Generator):
         """Generate arena boundary + random internal obstacles."""
         s = self.arena_size
@@ -252,6 +279,10 @@ class ActiveSLAMEnv(gym.Env):
         self._total_explored += new_cells
 
         obs = self._get_obs(lidar)
+
+        # Calculate initial distance to the nearest frontier boundary
+        self._prev_frontier_dist = self._get_min_dist_to_frontier()
+
         info = {
             "scan_time_ms": self._scan_time_ms,
             "slam_time_ms": 0.0,
@@ -317,6 +348,16 @@ class ActiveSLAMEnv(gym.Env):
         reward -= 0.01                      # time penalty
         if collision:
             reward -= 0.1                   # collision penalty
+
+        # Advanced Frontier-Based Exploration Reward (Shaping Reward)
+        # Pulls the robot dynamically towards boundaries between explored and unexplored zones
+        current_frontier_dist = self._get_min_dist_to_frontier()
+        if getattr(self, "_prev_frontier_dist", None) is not None:
+            # Positive reward for getting closer to a frontier cell, penalty for moving away
+            # Max change is capped at the grid size to avoid huge spikes when map layout changes
+            dist_change = np.clip(self._prev_frontier_dist - current_frontier_dist, -5.0, 5.0)
+            reward += float(dist_change * 0.1)  # Scale factor of 0.1 (e.g. up to +0.5 reward)
+        self._prev_frontier_dist = current_frontier_dist
 
         # Termination
         terminated = coverage_ratio >= 0.95  # 95% explored
