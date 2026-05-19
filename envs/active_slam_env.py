@@ -62,6 +62,7 @@ class ActiveSLAMEnv(gym.Env):
         render_mode: str | None = None,
         use_slam: bool = True,
         slam_num_particles: int = 50,
+        real_world_noise: bool = True,
     ):
         super().__init__()
 
@@ -75,6 +76,7 @@ class ActiveSLAMEnv(gym.Env):
         self.render_mode = render_mode
         self.use_slam = use_slam
         self.slam_num_particles = slam_num_particles
+        self.real_world_noise = real_world_noise
 
         # Create raycaster
         self.raycaster = create_raycaster(backend, num_rays, max_range)
@@ -123,6 +125,22 @@ class ActiveSLAMEnv(gym.Env):
         self._slam_time_ms = 0.0
         self.fig = None
         self.axes = None
+
+    def _apply_sensor_noise(self, lidar: np.ndarray) -> np.ndarray:
+        """Apply real-world LiDAR sensor noise: Gaussian range error + random dropout."""
+        if not self.real_world_noise:
+            return lidar
+        
+        # 1. Add Gaussian distance noise (std of 0.15 units, e.g., 15cm)
+        noise = self.np_random.normal(0.0, 0.15, size=lidar.shape).astype(np.float32)
+        lidar_noisy = lidar + noise
+        
+        # 2. Add random dropouts (1% chance to lose reflection and return max_range)
+        dropout_mask = self.np_random.random(size=lidar.shape) < 0.01
+        lidar_noisy[dropout_mask] = self.max_range
+        
+        # 3. Clip to valid physical range [0.0, max_range]
+        return np.clip(lidar_noisy, 0.0, self.max_range)
 
     def _generate_walls(self, rng: np.random.Generator):
         """Generate arena boundary + random internal obstacles."""
@@ -224,8 +242,11 @@ class ActiveSLAMEnv(gym.Env):
         # Initial scan
         import time
         t0 = time.perf_counter()
-        lidar = self.raycaster.scan(self._robot_x, self._robot_y, self._robot_theta)
+        raw_lidar = self.raycaster.scan(self._robot_x, self._robot_y, self._robot_theta)
         self._scan_time_ms = (time.perf_counter() - t0) * 1000
+
+        # Apply realistic sensor noise to LiDAR readings
+        lidar = self._apply_sensor_noise(raw_lidar)
 
         new_cells = self._update_coverage(lidar)
         self._total_explored += new_cells
@@ -249,9 +270,20 @@ class ActiveSLAMEnv(gym.Env):
         linear_vel = action[0] * 2.0   # max 2 units/step
         angular_vel = action[1] * 0.3  # max 0.3 rad/step
 
-        self._robot_theta += angular_vel
-        new_x = self._robot_x + linear_vel * np.cos(self._robot_theta)
-        new_y = self._robot_y + linear_vel * np.sin(self._robot_theta)
+        # Apply actuator/kinematics execution noise (wheel slip / motor drift)
+        if self.real_world_noise:
+            # We scale linear slip by magnitude of command and add small constant yaw drift
+            linear_slip = self.np_random.normal(0.0, 0.05 * abs(linear_vel))
+            angular_slip = self.np_random.normal(0.0, 0.02)
+            actual_linear = linear_vel + linear_slip
+            actual_angular = angular_vel + angular_slip
+        else:
+            actual_linear = linear_vel
+            actual_angular = angular_vel
+
+        self._robot_theta += actual_angular
+        new_x = self._robot_x + actual_linear * np.cos(self._robot_theta)
+        new_y = self._robot_y + actual_linear * np.sin(self._robot_theta)
 
         # Collision check
         collision = self._is_collision(new_x, new_y)
@@ -261,10 +293,13 @@ class ActiveSLAMEnv(gym.Env):
 
         # LiDAR scan
         t0 = time.perf_counter()
-        lidar = self.raycaster.scan(self._robot_x, self._robot_y, self._robot_theta)
+        raw_lidar = self.raycaster.scan(self._robot_x, self._robot_y, self._robot_theta)
         self._scan_time_ms = (time.perf_counter() - t0) * 1000
 
-        # SLAM update
+        # Apply realistic sensor noise to LiDAR readings
+        lidar = self._apply_sensor_noise(raw_lidar)
+
+        # SLAM update (receives the noisy laser scans and uncorrected odometry encoders/commands)
         self._slam_time_ms = 0.0
         if self.use_slam:
             slam_t0 = time.perf_counter()
