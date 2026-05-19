@@ -1,0 +1,10 @@
+# OmniRay - Core Dependencies
+numpy>=2.0
+gymnasium>=1.0
+pymunk>=7.0
+pybind11>=3.0
+matplotlib>=3.8
+
+# Optional: for training
+# stable-baselines3>=2.0
+# torch>=2.0
