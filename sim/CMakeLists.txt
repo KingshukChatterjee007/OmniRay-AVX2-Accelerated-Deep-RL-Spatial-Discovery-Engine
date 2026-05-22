@@ -14,7 +14,14 @@ if(MSVC)
     add_compile_definitions(__AVX2__)
 else()
     # GCC / Clang
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mavx2 -mfma -O3 -ffast-math")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
+        # Apple Silicon: Enable standard optimizations and define __ARM_NEON__
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -ffast-math")
+        add_compile_definitions(__ARM_NEON__)
+    else()
+        # Intel x86_64: Enable AVX2 and FMA
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mavx2 -mfma -O3 -ffast-math")
+    endif()
 endif()
 
 # ============================================================================
@@ -50,7 +57,7 @@ pybind11_add_module(raycaster_simd
 target_include_directories(raycaster_simd PRIVATE src)
 
 # Install to project root so Python can import it
-install(TARGETS raycaster_simd DESTINATION ${CMAKE_SOURCE_DIR}/..)
+install(TARGETS raycaster_simd DESTINATION ${CMAKE_SOURCE_DIR})
 
 message(STATUS "=== OmniRay SIMD Raycaster ===")
 message(STATUS "Compiler: ${CMAKE_CXX_COMPILER_ID}")

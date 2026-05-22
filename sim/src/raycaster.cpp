@@ -22,7 +22,6 @@
 
 #include "raycaster.h"
 
-#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -32,6 +31,8 @@
 // MSVC uses /arch:AVX2 flag, immintrin.h is available regardless
 #include <immintrin.h>
 #define __AVX2__ 1
+#elif defined(__ARM_NEON__)
+#include <arm_neon.h>
 #endif
 
 // ============================================================================
@@ -176,6 +177,97 @@ void Raycaster::raytrace_avx2_batch(
 #endif  // __AVX2__
 
 // ============================================================================
+// ARM NEON Batch (4 rays at once)
+// ============================================================================
+
+#ifdef __ARM_NEON__
+
+void Raycaster::raytrace_neon_batch(
+    float ox, float oy,
+    const float* cos_angles,
+    const float* sin_angles,
+    float* out
+) const {
+    // Load 4 ray directions
+    float32x4_t dx = vld1q_f32(cos_angles);
+    float32x4_t dy = vld1q_f32(sin_angles);
+
+    // Initialize min distances to max_range
+    float32x4_t min_t = vdupq_n_f32(max_range_);
+
+    // Constants
+    float32x4_t zero = vdupq_n_f32(0.0f);
+    float32x4_t one  = vdupq_n_f32(1.0f);
+    float32x4_t eps  = vdupq_n_f32(1e-10f);
+
+    for (const auto& w : walls_) {
+        // Wall direction (broadcast to all 4 lanes)
+        float32x4_t sx = vdupq_n_f32(w.dx);
+        float32x4_t sy = vdupq_n_f32(w.dy);
+
+        // denom = dx * sy - dy * sx
+        float32x4_t denom = vsubq_f32(
+            vmulq_f32(dx, sy),
+            vmulq_f32(dy, sx)
+        );
+
+        // |denom|
+        float32x4_t abs_denom = vabsq_f32(denom);
+
+        // |denom| > eps
+        uint32x4_t valid_denom = vcgtq_f32(abs_denom, eps);
+
+        // inv_denom = 1 / denom (safeguarded against parallel lanes)
+        float32x4_t safe_denom = vbslq_f32(valid_denom, denom, one);
+        float32x4_t inv_denom = vdivq_f32(one, safe_denom);
+
+        // diff = wall_start - ray_origin
+        float32x4_t diffx = vdupq_n_f32(w.x1 - ox);
+        float32x4_t diffy = vdupq_n_f32(w.y1 - oy);
+
+        // t = (diff × wall_dir) * inv_denom
+        float32x4_t t = vmulq_f32(
+            vsubq_f32(
+                vmulq_f32(diffx, sy),
+                vmulq_f32(diffy, sx)
+            ),
+            inv_denom
+        );
+
+        // u = (diff × ray_dir) * inv_denom
+        float32x4_t u = vmulq_f32(
+            vsubq_f32(
+                vmulq_f32(diffx, dy),
+                vmulq_f32(diffy, dx)
+            ),
+            inv_denom
+        );
+
+        // Valid hit: t >= 0 && t < min_t && u >= 0 && u <= 1 && |denom| > eps
+        uint32x4_t t_ge_zero = vcgeq_f32(t, zero);
+        uint32x4_t t_lt_min  = vcltq_f32(t, min_t);
+        uint32x4_t u_ge_zero = vcgeq_f32(u, zero);
+        uint32x4_t u_le_one  = vcleq_f32(u, one);
+
+        uint32x4_t valid = vandq_u32(
+            vandq_u32(t_ge_zero, t_lt_min),
+            vandq_u32(
+                vandq_u32(u_ge_zero, u_le_one),
+                valid_denom
+            )
+        );
+
+        // Update min_t where valid
+        min_t = vbslq_f32(valid, t, min_t);
+    }
+
+    // Store results
+    vst1q_f32(out, min_t);
+}
+
+#endif  // __ARM_NEON__
+
+// ============================================================================
 // Main Scan
 // ============================================================================
 
@@ -206,6 +298,20 @@ RaycastResult Raycaster::scan(float robot_x, float robot_y, float robot_angle) c
         );
     }
     // Handle remaining rays (if num_rays not multiple of 8)
+    for (int i = simd_count; i < num_rays_; ++i) {
+        distances[i] = raytrace_scalar(robot_x, robot_y, cos_angles[i], sin_angles[i]);
+    }
+#elif defined(__ARM_NEON__)
+    // Process 4 rays at a time using NEON
+    int simd_count = (num_rays_ / 4) * 4;
+    for (int i = 0; i < simd_count; i += 4) {
+        raytrace_neon_batch(
+            robot_x, robot_y,
+            &cos_angles[i], &sin_angles[i],
+            &distances[i]
+        );
+    }
+    // Handle remaining rays (if num_rays not multiple of 4)
     for (int i = simd_count; i < num_rays_; ++i) {
         distances[i] = raytrace_scalar(robot_x, robot_y, cos_angles[i], sin_angles[i]);
     }

@@ -1,0 +1,7 @@
+/Users/ayushranjan/OmniRay-AVX2-Accelerated-Deep-RL-Spatial-Discovery-Engine/sim/build/CMakeFiles/raycaster_simd.dir
+/Users/ayushranjan/OmniRay-AVX2-Accelerated-Deep-RL-Spatial-Discovery-Engine/sim/build/CMakeFiles/edit_cache.dir
+/Users/ayushranjan/OmniRay-AVX2-Accelerated-Deep-RL-Spatial-Discovery-Engine/sim/build/CMakeFiles/rebuild_cache.dir
+/Users/ayushranjan/OmniRay-AVX2-Accelerated-Deep-RL-Spatial-Discovery-Engine/sim/build/CMakeFiles/list_install_components.dir
+/Users/ayushranjan/OmniRay-AVX2-Accelerated-Deep-RL-Spatial-Discovery-Engine/sim/build/CMakeFiles/install.dir
+/Users/ayushranjan/OmniRay-AVX2-Accelerated-Deep-RL-Spatial-Discovery-Engine/sim/build/CMakeFiles/install/local.dir
+/Users/ayushranjan/OmniRay-AVX2-Accelerated-Deep-RL-Spatial-Discovery-Engine/sim/build/CMakeFiles/install/strip.dir

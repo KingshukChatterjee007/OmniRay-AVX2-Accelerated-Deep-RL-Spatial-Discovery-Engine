@@ -1,0 +1,1 @@
+/Library/Developer/CommandLineTools/usr/bin/clang++  -O3 -ffast-math -arch arm64 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -bundle -Wl,-headerpad_max_install_names -Xlinker -undefined -Xlinker dynamic_lookup -flto -o raycaster_simd.cpython-311-darwin.so CMakeFiles/raycaster_simd.dir/src/bindings.cpp.o CMakeFiles/raycaster_simd.dir/src/raycaster.cpp.o

@@ -82,4 +82,17 @@ private:
         float* out                // 8 distances
     ) const;
 #endif
+
+#ifdef __ARM_NEON__
+    /**
+     * NEON batch: 4 rays vs all walls simultaneously using 128-bit registers.
+     * Writes results to out[0..3].
+     */
+    void raytrace_neon_batch(
+        float ox, float oy,
+        const float* cos_angles,  // 4 cosines
+        const float* sin_angles,  // 4 sines
+        float* out                // 4 distances
+    ) const;
+#endif
 };
