@@ -36,7 +36,7 @@ Here is the horizontal data-flow architecture of the OmniRay Active SLAM Deep RL
 * Realistic Sim-to-Real Degradation Models: Integrated continuous kinodynamic wheel slip errors, constant yaw drifts, and non-ideal LiDAR distance noise (with random dropouts) to simulate a differential-drive robot.
 * Master Explorer Convergence: Fully converged a custom Multi-Input CNN-MLP PPO agent, increasing average episode reward by +123% (reaching 1,530).
 * 95.1% Drift Reduction: Confirmed via quantitative testing that the PPO policy guides the robot to keep final positioning drift to a minuscule 1.02 units (a 95.1% drift correction relative to uncorrected dead-reckoning).
-* 5-Layer Self-Adaptive Autonomy System: Implemented a full "sentient-looking" feedback loop architecture with real-time health monitoring, dynamic reward adaptation, a meta-policy that learns to tune rewards, auto-difficulty curriculum, and in-deployment continual learning.
+* 5-Layer Self-Adaptive Autonomy System: Implemented a closed-loop feedback architecture with real-time health monitoring, dynamic reward adaptation, a meta-policy that learns to tune rewards, an auto-difficulty curriculum, and in-deployment continual learning.
 
 ---
 
@@ -101,7 +101,7 @@ OmniRay includes a full self-adaptive autonomy architecture that makes the agent
 | **2** | `adaptive_reward.py` | **Adaptive Reward** — Dynamically modifies reward weights based on health. Stuck? Boost frontier pull 2×. Lost? Add safety penalty. Thriving? Reduce exploration and focus unknowns. |
 | **3** | `meta_policy.py` | **Meta-Learner** — A small neural network that *learns* the optimal reward weight configuration from health metrics using REINFORCE-style updates. Replaces heuristic rules with learned tuning. |
 | **4** | `curriculum.py` | **Self-Difficulty** — Auto-adjusts obstacles, arena size, noise level, and step budget based on rolling coverage performance. Keeps the environment at the edge of the agent's capability. |
-| **5** | `continual_learner.py` | **Immortal Learner** — Records episodes in a replay buffer and periodically retrains the policy. Checkpoints before each retrain and auto-rollbacks on degradation. |
+| **5** | `continual_learner.py` | **Continual Learner** — Records episodes in a replay buffer and periodically retrains the policy. Checkpoints before each retrain and auto-rollbacks on degradation. |
 
 ### Adaptive Training Commands
 
