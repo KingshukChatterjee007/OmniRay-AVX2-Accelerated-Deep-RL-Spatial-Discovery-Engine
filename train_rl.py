@@ -10,6 +10,7 @@ Features:
   - Pluggable support for VectorSLAM observations.
   - CUDA GPU-accelerated training automatically enabled if available.
   - Configuration hyperparams fully loaded from config.yaml.
+  - 5-Layer Self-Adaptive Autonomy System (--adaptive flag).
 """
 
 import argparse
@@ -20,12 +21,90 @@ import yaml
 import numpy as np
 import torch as th
 from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from envs.active_slam_env import ActiveSLAMEnv
 
 # Force UTF-8 output on Windows
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
+
+
+class AdaptiveCallback(BaseCallback):
+    """
+    SB3 training callback that bridges the PPO training loop with the
+    adaptive environment wrapper. Feeds real-time policy entropy to the
+    health monitor every training step.
+    """
+
+    def __init__(self, adaptive_env=None, verbose=0):
+        super().__init__(verbose)
+        self.adaptive_env = adaptive_env
+        self._last_entropy = 1.0
+
+    def _on_step(self) -> bool:
+        """Called after every environment step during training."""
+        if self.adaptive_env is None:
+            return True
+
+        # Extract policy entropy from the SB3 logger
+        # SB3 logs 'entropy_loss' which is the mean entropy of the policy
+        if hasattr(self.model, 'logger') and self.model.logger is not None:
+            try:
+                # During rollout collection, entropy isn't directly available
+                # but we can compute it from the policy distribution
+                if hasattr(self.model.policy, 'action_dist') and self.model.policy.action_dist is not None:
+                    try:
+                        entropy = self.model.policy.action_dist.entropy()
+                        if entropy is not None:
+                            self._last_entropy = float(entropy.mean().item())
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        # Feed entropy to the adaptive wrapper
+        self.adaptive_env.set_policy_entropy(self._last_entropy)
+        return True
+
+    def _on_rollout_end(self) -> None:
+        """Called at the end of each rollout collection."""
+        if self.adaptive_env is None:
+            return
+
+        # Log adaptive stats periodically
+        try:
+            stats = self.adaptive_env.get_adaptive_stats()
+            health = stats.get("health", {})
+            self.logger.record("adaptive/health_score", health.get("score", 0.0))
+            self.logger.record("adaptive/is_failing", health.get("is_failing", False))
+
+            diagnostics = health.get("diagnostics", {})
+            self.logger.record("adaptive/entropy_health", diagnostics.get("entropy", 0.0))
+            self.logger.record("adaptive/coverage_health", diagnostics.get("coverage", 0.0))
+            self.logger.record("adaptive/slam_health", diagnostics.get("slam", 0.0))
+            self.logger.record("adaptive/coverage_velocity", diagnostics.get("velocity", 0.0))
+
+            reward_info = stats.get("reward", {})
+            weights = reward_info.get("weights", {})
+            self.logger.record("adaptive/exploration_scale", weights.get("exploration_scale", 1.0))
+            self.logger.record("adaptive/frontier_scale", weights.get("frontier_scale", 1.0))
+            self.logger.record("adaptive/curiosity_bonus", weights.get("curiosity_bonus", 0.0))
+            self.logger.record("adaptive/collision_rate", reward_info.get("collision_rate", 0.0))
+
+            if "curriculum" in stats:
+                cur = stats["curriculum"]
+                self.logger.record("adaptive/difficulty", cur.get("curriculum_difficulty", 0.0))
+                self.logger.record("adaptive/obstacles", cur.get("curriculum_obstacles", 6))
+                self.logger.record("adaptive/arena_size", cur.get("curriculum_arena_size", 100.0))
+                self.logger.record("adaptive/noise_scale", cur.get("curriculum_noise_scale", 1.0))
+
+            if "continual" in stats:
+                cl = stats["continual"]
+                self.logger.record("adaptive/retrains", cl.get("continual_total_retrains", 0))
+                self.logger.record("adaptive/rollbacks", cl.get("continual_total_rollbacks", 0))
+        except Exception:
+            pass  # Don't crash training on logging errors
 
 
 class SLAMFeaturesExtractor(BaseFeaturesExtractor):
@@ -179,6 +258,12 @@ def train():
     parser.add_argument("--reward-time", type=float, default=None, help="Override time penalty reward weight")
     parser.add_argument("--reward-collision", type=float, default=None, help="Override collision penalty weight")
     parser.add_argument("--reward-frontier", type=float, default=None, help="Override frontier exploration shaping weight")
+    
+    # Self-Adaptive Autonomy System flags
+    parser.add_argument("--adaptive", action="store_true", help="Enable the 5-layer self-adaptive autonomy system")
+    parser.add_argument("--meta-policy", action="store_true", help="Enable Layer 3 meta-policy (requires --adaptive)")
+    parser.add_argument("--curriculum", action="store_true", help="Enable Layer 4 curriculum auto-difficulty (requires --adaptive)")
+    parser.add_argument("--continual", action="store_true", help="Enable Layer 5 continual learning (requires --adaptive)")
     args = parser.parse_args()
 
     # Load configuration file
@@ -210,6 +295,13 @@ def train():
     rew_col = args.reward_collision if args.reward_collision is not None else env_config.get("reward_collision_penalty", 0.1)
     rew_front = args.reward_frontier if args.reward_frontier is not None else env_config.get("reward_frontier", 0.1)
 
+    # Adaptive system configuration
+    adaptive_config = config.get("adaptive", {})
+    use_adaptive = args.adaptive or adaptive_config.get("enabled", False)
+    use_meta = args.meta_policy or adaptive_config.get("meta_policy", {}).get("enabled", False)
+    use_curriculum = args.curriculum or adaptive_config.get("curriculum", {}).get("enabled", False)
+    use_continual = args.continual or adaptive_config.get("continual_learning", {}).get("enabled", False)
+
     print("=" * 70)
     print("  OmniRay Active SLAM Deep RL Trainer")
     print("=" * 70)
@@ -227,10 +319,19 @@ def train():
     print(f"  Time Penalty:     {rew_time}")
     print(f"  Colli Penalty:    {rew_col}")
     print(f"  Front Reward:     {rew_front}")
+    if use_adaptive:
+        print(f"  Adaptive System:  ENABLED")
+        print(f"    ├─ Health Monitor:   ACTIVE")
+        print(f"    ├─ Adaptive Reward:  ACTIVE")
+        print(f"    ├─ Meta-Policy:      {'ACTIVE' if use_meta else 'DISABLED'}")
+        print(f"    ├─ Curriculum:       {'ACTIVE' if use_curriculum else 'DISABLED'}")
+        print(f"    └─ Continual Learn:  {'ACTIVE' if use_continual else 'DISABLED'}")
+    else:
+        print(f"  Adaptive System:  DISABLED (use --adaptive to enable)")
     print("-" * 70)
 
-    # Initialize environment
-    env = ActiveSLAMEnv(
+    # Initialize base environment
+    base_env = ActiveSLAMEnv(
         backend="numpy",
         num_rays=num_rays,
         map_resolution=map_res,
@@ -242,6 +343,22 @@ def train():
         reward_collision_penalty=rew_col,
         reward_frontier=rew_front,
     )
+
+    # Wrap with adaptive system if enabled
+    adaptive_env = None
+    if use_adaptive:
+        from envs.adaptive_env import AdaptiveActiveSLAMEnv
+        adaptive_env = AdaptiveActiveSLAMEnv(
+            env=base_env,
+            config=adaptive_config,
+            enable_meta=use_meta,
+            enable_curriculum=use_curriculum,
+            enable_continual=use_continual,
+        )
+        env = adaptive_env
+        print("  [ADAPTIVE] 5-Layer Self-Adaptive Autonomy System initialized.")
+    else:
+        env = base_env
 
     # Setup custom features extractor arguments
     policy_kwargs = dict(
@@ -274,17 +391,61 @@ def train():
         device=device,
     )
 
+    # Connect adaptive system to the model (for entropy access + continual learning)
+    callbacks = []
+    if use_adaptive and adaptive_env is not None:
+        adaptive_env.set_model(model)
+        adaptive_callback = AdaptiveCallback(adaptive_env=adaptive_env, verbose=1)
+        callbacks.append(adaptive_callback)
+        print("  [ADAPTIVE] AdaptiveCallback registered for entropy + health logging.")
+
     # Train model
     print("\n  Starting PPO Training Pipeline...")
+    if use_adaptive:
+        print("  [ADAPTIVE] Health monitor, adaptive reward, and all enabled layers are LIVE.")
     t0 = time.time()
     
     try:
-        model.learn(total_timesteps=total_steps)
+        model.learn(
+            total_timesteps=total_steps,
+            callback=callbacks if callbacks else None,
+        )
         duration = time.time() - t0
         print("\n" + "=" * 70)
         print("  Training Completed Successfully! [SUCCESS]")
         print(f"  Total Duration:   {duration:.1f} seconds")
         print(f"  Save Path:        {args.save_path}.zip")
+
+        # Print adaptive summary if enabled
+        if use_adaptive and adaptive_env is not None:
+            stats = adaptive_env.get_adaptive_stats()
+            print("\n  --- Adaptive System Final Summary ---")
+            health = stats.get("health", {})
+            print(f"  Final Health Score:    {health.get('score', 0.0):.3f}")
+            print(f"  System Failing:        {health.get('is_failing', False)}")
+            
+            if "curriculum" in stats:
+                cur = stats["curriculum"]
+                print(f"  Difficulty Level:      {cur.get('curriculum_level', 0)}")
+                print(f"  Difficulty Increases:  {cur.get('curriculum_increases', 0)}")
+                print(f"  Difficulty Decreases:  {cur.get('curriculum_decreases', 0)}")
+                print(f"  Final Obstacles:       {cur.get('curriculum_obstacles', 6)}")
+                print(f"  Final Arena Size:      {cur.get('curriculum_arena_size', 100.0)}")
+                print(f"  Final Noise Scale:     {cur.get('curriculum_noise_scale', 1.0)}")
+            
+            if "continual" in stats:
+                cl = stats["continual"]
+                print(f"  Continual Retrains:    {cl.get('continual_total_retrains', 0)}")
+                print(f"  Continual Rollbacks:   {cl.get('continual_total_rollbacks', 0)}")
+                print(f"  Peak Reward:           {cl.get('continual_peak_reward', 0.0):.2f}")
+            
+            if "meta_policy" in stats:
+                mp = stats["meta_policy"]
+                print(f"  Meta-Policy Updates:   {mp.get('meta_updates', 0)}")
+                print(f"  Meta Cumulative Δ:     {mp.get('meta_cumulative_delta', 0.0):.4f}")
+            
+            print("  ------------------------------------")
+
         print("=" * 70)
         
         # Save model

@@ -36,6 +36,7 @@ Here is the horizontal data-flow architecture of the OmniRay Active SLAM Deep RL
 * Realistic Sim-to-Real Degradation Models: Integrated continuous kinodynamic wheel slip errors, constant yaw drifts, and non-ideal LiDAR distance noise (with random dropouts) to simulate a differential-drive robot.
 * Master Explorer Convergence: Fully converged a custom Multi-Input CNN-MLP PPO agent, increasing average episode reward by +123% (reaching 1,530).
 * 95.1% Drift Reduction: Confirmed via quantitative testing that the PPO policy guides the robot to keep final positioning drift to a minuscule 1.02 units (a 95.1% drift correction relative to uncorrected dead-reckoning).
+* 5-Layer Self-Adaptive Autonomy System: Implemented a full "sentient-looking" feedback loop architecture with real-time health monitoring, dynamic reward adaptation, a meta-policy that learns to tune rewards, auto-difficulty curriculum, and in-deployment continual learning.
 
 ---
 
@@ -51,7 +52,13 @@ OmniRay/
 │   ├── __init__.py
 │   ├── active_slam_env.py      # Gymnasium Active SLAM Environment & noise models
 │   ├── raycaster_backends.py   # Pluggable Raycasting Backends (NumPy, PyMunk, SIMD)
-│   └── vector_slam.py          # Parallelized Pure-NumPy Particle Filter Engine
+│   ├── vector_slam.py          # Parallelized Pure-NumPy Particle Filter Engine
+│   ├── health_monitor.py       # Layer 1: Real-time self-awareness health scoring
+│   ├── adaptive_reward.py      # Layer 2: Dynamic reward weight adjustment
+│   ├── meta_policy.py          # Layer 3: Neural meta-policy that learns optimal rewards
+│   ├── curriculum.py           # Layer 4: Auto-difficulty curriculum manager
+│   ├── continual_learner.py    # Layer 5: In-deployment replay buffer & retrain
+│   └── adaptive_env.py         # Orchestration wrapper composing all 5 layers
 │
 ├── profiling/
 │   ├── __init__.py
@@ -70,14 +77,71 @@ OmniRay/
 │   │   └── raycaster.h         # C++ raycaster API header
 │   └── test_raycaster.py       # C++ correctness and speed validation
 │
-├── config.yaml                 # Centralized training & network hyperparameters
+├── config.yaml                 # Centralized training, network & adaptive hyperparameters
 ├── requirements.txt            # Pinned package dependencies
-├── train_rl.py                 # PPO deep reinforcement learning pipeline (ablation ready)
+├── train_rl.py                 # PPO deep RL pipeline (ablation + adaptive ready)
 ├── evaluate_and_record.py      # Quantitative trajectory evaluator (saves to results/)
 ├── run_ablation_study.py       # Ablation study sequencer (entropy, rewards, noise)
 ├── visualize_agent.py          # Real-time human visualizer (matplotlib GUI)
 ├── test_env.py                 # Environment smoke test with rendering
 └── README.md                   # Interactive documentation
+```
+
+---
+
+## 5-Layer Self-Adaptive Autonomy System
+
+OmniRay includes a full self-adaptive autonomy architecture that makes the agent appear to "think, learn, and improve" through layered feedback loops. Enable it with `--adaptive`:
+
+### The 5 Layers
+
+| Layer | Module | What It Does |
+| :---: | :--- | :--- |
+| **1** | `health_monitor.py` | **Self-Awareness** — Computes a real-time health score (0–1) from entropy behavior, coverage velocity, and SLAM confidence. Detects when the agent is stuck, lost, or stalling. |
+| **2** | `adaptive_reward.py` | **Adaptive Reward** — Dynamically modifies reward weights based on health. Stuck? Boost frontier pull 2×. Lost? Add safety penalty. Thriving? Reduce exploration and focus unknowns. |
+| **3** | `meta_policy.py` | **Meta-Learner** — A small neural network that *learns* the optimal reward weight configuration from health metrics using REINFORCE-style updates. Replaces heuristic rules with learned tuning. |
+| **4** | `curriculum.py` | **Self-Difficulty** — Auto-adjusts obstacles, arena size, noise level, and step budget based on rolling coverage performance. Keeps the environment at the edge of the agent's capability. |
+| **5** | `continual_learner.py` | **Immortal Learner** — Records episodes in a replay buffer and periodically retrains the policy. Checkpoints before each retrain and auto-rollbacks on degradation. |
+
+### Adaptive Training Commands
+
+* **Full adaptive mode (all 5 layers):**
+  ```powershell
+  py -3.11 train_rl.py --adaptive --meta-policy --curriculum --continual --total-steps 100000
+  ```
+
+* **Layers 1-2 only (health + adaptive reward, no meta-learning):**
+  ```powershell
+  py -3.11 train_rl.py --adaptive --total-steps 50000
+  ```
+
+* **Adaptive evaluation (health monitoring during eval):**
+  ```powershell
+  py -3.11 evaluate_and_record.py --model-path active_slam_ppo.zip --adaptive --steps 200
+  ```
+
+### One Episode Flow
+
+```
+Step 1: Health Monitor checks vitals
+  └─> entropy=1.2, coverage_velocity=0.3, SLAM_confidence=0.85
+  └─> health_score = 0.7 (okay, not great)
+
+Step 2: Health info → Meta-Policy (if enabled)
+  └─> Meta-Policy outputs: "boost frontier ×1.5, add curiosity 0.2"
+
+Step 3: Adaptive Reward applies those weights
+  └─> adjusted_reward = base + (frontier × 1.5) + (entropy × 0.2)
+
+Step 4: Agent learns from adjusted reward signal
+  └─> Policy updates toward high-frontier, high-curiosity actions
+
+Step 5: If health stays low for 100+ steps
+  └─> Curriculum increases difficulty (+2 obstacles, +noise)
+
+Step 6: After episode ends
+  └─> Record in replay buffer → retrain every 10 episodes
+  └─> Policy evolves continuously
 ```
 
 ---

@@ -38,3 +38,53 @@ ppo:
   clip_range: 0.2
   ent_coef: 0.01
   total_timesteps: 50000
+
+# Self-Adaptive Autonomy System Configuration (5 Layers)
+adaptive:
+  enabled: false
+
+  # Layer 1: Health Monitor — real-time self-awareness scoring
+  health_monitor:
+    ema_alpha: 0.05            # EMA smoothing (lower = smoother)
+    entropy_weight: 0.35       # Weight for entropy sub-score
+    coverage_weight: 0.40      # Weight for coverage velocity sub-score
+    slam_weight: 0.25          # Weight for SLAM confidence sub-score
+    window_size: 50            # Rolling window for velocity calculation
+
+  # Layer 2: Adaptive Reward — dynamic reward weight adjustment
+  adaptive_reward:
+    stuck_frontier_boost: 2.0        # Frontier multiplier when stuck
+    low_entropy_curiosity: 0.2       # Curiosity bonus when entropy is low
+    high_health_explore_reduction: 0.5  # Exploration reduction when healthy
+    lost_safety_penalty: 0.3         # Extra time penalty when SLAM is lost
+    collision_rate_threshold: 0.2    # Rolling collision rate trigger
+    collision_penalty_boost: 3.0     # Collision penalty multiplier
+
+  # Layer 3: Meta-Policy — neural network that learns optimal reward weights
+  meta_policy:
+    enabled: false
+    learning_rate: 1.0e-4
+    update_interval: 200       # Steps between meta-policy REINFORCE updates
+    warmup_steps: 1000         # Steps before meta-policy activates
+    scale_clamp: [0.1, 5.0]   # Output clamp range for safety
+
+  # Layer 4: Curriculum — auto-difficulty scaling
+  curriculum:
+    enabled: false
+    coverage_threshold_up: 0.90   # Coverage above which difficulty increases
+    coverage_threshold_down: 0.40 # Coverage below which difficulty decreases
+    evaluation_window: 5          # Episodes for rolling average
+    obstacle_range: [2, 20]
+    arena_range: [60.0, 200.0]
+    noise_range: [0.0, 2.0]
+    steps_range: [100, 500]
+
+  # Layer 5: Continual Learning — in-deployment replay and retrain
+  continual_learning:
+    enabled: false
+    replay_buffer_size: 50     # Max episodes stored
+    retrain_interval: 10       # Episodes between retrain attempts
+    retrain_steps: 2048        # PPO timesteps per retrain cycle
+    max_checkpoints: 3         # Checkpoint files to keep
+    performance_gate: 0.10     # 10% performance drop triggers retrain
+    rollback_threshold: 0.15   # 15% post-retrain drop triggers rollback

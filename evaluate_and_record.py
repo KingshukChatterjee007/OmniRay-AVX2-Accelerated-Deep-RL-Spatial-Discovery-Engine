@@ -16,6 +16,7 @@ import os
 import argparse
 import sys
 import numpy as np
+import yaml
 import matplotlib.pyplot as plt
 from stable_baselines3 import PPO
 from envs.active_slam_env import ActiveSLAMEnv
@@ -25,7 +26,7 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
 
 
-def evaluate_agent(model_path: str, save_dir: str, num_rays: int, map_res: int, steps: int):
+def evaluate_agent(model_path: str, save_dir: str, num_rays: int, map_res: int, steps: int, use_adaptive: bool = False, config_path: str = "config.yaml"):
     print("=" * 75)
     print("  OmniRay Active SLAM — Robust Agent Evaluation Under Real-World Noise")
     print("=" * 75)
@@ -39,7 +40,7 @@ def evaluate_agent(model_path: str, save_dir: str, num_rays: int, map_res: int, 
 
     # 1. Initialize environment with noise enabled
     print("  Initializing Gymnasium active SLAM environment with physical noise...")
-    env = ActiveSLAMEnv(
+    base_env = ActiveSLAMEnv(
         backend="numpy",
         num_rays=num_rays,
         map_resolution=map_res,
@@ -48,6 +49,27 @@ def evaluate_agent(model_path: str, save_dir: str, num_rays: int, map_res: int, 
         use_slam=True,
         real_world_noise=True,  # Crucial: enable physical wheel slip and sensor dropout
     )
+
+    # Wrap with adaptive system if enabled
+    adaptive_env = None
+    if use_adaptive:
+        from envs.adaptive_env import AdaptiveActiveSLAMEnv
+        config = {}
+        if os.path.exists(config_path):
+            with open(config_path, "r") as f:
+                config = yaml.safe_load(f)
+        adaptive_config = config.get("adaptive", {})
+        adaptive_env = AdaptiveActiveSLAMEnv(
+            env=base_env,
+            config=adaptive_config,
+            enable_meta=adaptive_config.get("meta_policy", {}).get("enabled", False),
+            enable_curriculum=False,  # Don't change difficulty during evaluation
+            enable_continual=False,   # Don't retrain during evaluation
+        )
+        env = adaptive_env
+        print("  [ADAPTIVE] Adaptive evaluation mode enabled (health monitoring active).")
+    else:
+        env = base_env
 
     # 2. Load trained model
     print(f"  Loading trained PPO model from: {model_path}...")
@@ -68,6 +90,7 @@ def evaluate_agent(model_path: str, save_dir: str, num_rays: int, map_res: int, 
     slam_trajectory = []
     coverage_history = []
     reward_history = []
+    health_history = []  # Adaptive health scores
     
     # Initial states
     gt_x, gt_y, gt_theta = env._robot_x, env._robot_y, env._robot_theta
@@ -118,6 +141,12 @@ def evaluate_agent(model_path: str, save_dir: str, num_rays: int, map_res: int, 
         slam_trajectory.append((slam_pose[0], slam_pose[1]))
         coverage_history.append(info["coverage"])
         reward_history.append(reward)
+        
+        # Record health metrics if adaptive mode is active
+        if use_adaptive and adaptive_env is not None:
+            health_history.append(info.get("health_score", 0.5))
+        else:
+            health_history.append(0.5)
 
         if terminated or truncated:
             print(f"    Finished in {step_count} steps.")
@@ -141,10 +170,11 @@ def evaluate_agent(model_path: str, save_dir: str, num_rays: int, map_res: int, 
 
     # 4. Generate beautiful diagnostic plots
     plt.style.use('dark_background')
-    fig, axes = plt.subplots(1, 2, figsize=(16, 7), facecolor='#0d0d1a')
+    num_plots = 3 if use_adaptive else 2
+    fig, axes = plt.subplots(1, num_plots, figsize=(8 * num_plots, 7), facecolor='#0d0d1a')
     
     # Setup styling parameters
-    for ax in axes:
+    for ax in axes[:2]:
         ax.set_facecolor('#0d0d1a')
         ax.tick_params(colors='#8888aa')
         ax.spines['bottom'].set_color('#333355')
@@ -194,6 +224,28 @@ def evaluate_agent(model_path: str, save_dir: str, num_rays: int, map_res: int, 
     cbar = fig.colorbar(im, ax=ax_map, fraction=0.046, pad=0.04)
     cbar.ax.yaxis.set_tick_params(color='#8888aa', labelcolor='white')
     ax_map.legend(loc="upper left", framealpha=0.2, facecolor='#0d0d1a', labelcolor='white')
+
+    # Plot 3: Health Score Over Time (if adaptive)
+    if use_adaptive and len(health_history) > 0:
+        ax_health = axes[2]
+        ax_health.set_facecolor('#0d0d1a')
+        ax_health.tick_params(colors='#8888aa')
+        ax_health.spines['bottom'].set_color('#333355')
+        ax_health.spines['top'].set_color('#333355')
+        ax_health.spines['left'].set_color('#333355')
+        ax_health.spines['right'].set_color('#333355')
+        ax_health.grid(color='#222244', linestyle='--', alpha=0.5)
+        
+        health_steps = np.arange(len(health_history))
+        ax_health.plot(health_steps, health_history, color='#00ff88', linewidth=2.0, label='Health Score')
+        ax_health.axhline(y=0.5, color='#ff6b6b', linestyle='--', linewidth=1.5, alpha=0.7, label='Failure Threshold')
+        ax_health.fill_between(health_steps, 0, 0.5, alpha=0.1, color='#ff6b6b')
+        ax_health.fill_between(health_steps, 0.5, 1.0, alpha=0.05, color='#00ff88')
+        ax_health.set_ylim(0, 1.05)
+        ax_health.set_xlabel('Steps', color='white', labelpad=10)
+        ax_health.set_ylabel('Health Score', color='white', labelpad=10)
+        ax_health.set_title('Adaptive Health Monitor', fontsize=13, color='white', fontweight='bold', pad=15)
+        ax_health.legend(loc='lower right', framealpha=0.2, facecolor='#0d0d1a', labelcolor='white')
 
     plt.suptitle(f"OmniRay Active SLAM under Real-World Noise (LiDAR + Actuator Drift)\nSLAM Position Error: {final_slam_drift:.2f} vs Odometry Drift: {final_odom_drift:.2f}", 
                  fontsize=15, color='white', fontweight="bold", y=0.98)
@@ -253,6 +305,8 @@ if __name__ == "__main__":
     parser.add_argument("--num-rays", type=int, default=128, help="Number of rays for LiDAR scan")
     parser.add_argument("--map-res", type=int, default=50, help="Resolution of the mapping grid")
     parser.add_argument("--steps", type=int, default=150, help="Number of steps in the evaluation episode")
+    parser.add_argument("--adaptive", action="store_true", help="Enable adaptive health monitoring during evaluation")
+    parser.add_argument("--config", type=str, default="config.yaml", help="Path to config.yaml file")
     args = parser.parse_args()
 
     # Automatically add file extension if missing
@@ -270,4 +324,6 @@ if __name__ == "__main__":
         num_rays=args.num_rays,
         map_res=args.map_res,
         steps=args.steps,
+        use_adaptive=args.adaptive,
+        config_path=args.config,
     )

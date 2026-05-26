@@ -67,6 +67,7 @@ class ActiveSLAMEnv(gym.Env):
         reward_time_penalty: float = 0.01,
         reward_collision_penalty: float = 0.1,
         reward_frontier: float = 0.1,
+        noise_scale: float = 1.0,
     ):
         super().__init__()
 
@@ -87,6 +88,12 @@ class ActiveSLAMEnv(gym.Env):
         self.reward_time_penalty = reward_time_penalty
         self.reward_collision_penalty = reward_collision_penalty
         self.reward_frontier = reward_frontier
+        
+        # Noise scaling multiplier (modified by curriculum manager)
+        self.noise_scale = noise_scale
+        
+        # Collision tracking for adaptive system
+        self._collision_count = 0
 
         # Create raycaster
         self.raycaster = create_raycaster(backend, num_rays, max_range)
@@ -137,16 +144,19 @@ class ActiveSLAMEnv(gym.Env):
         self.axes = None
 
     def _apply_sensor_noise(self, lidar: np.ndarray) -> np.ndarray:
-        """Apply real-world LiDAR sensor noise: Gaussian range error + random dropout."""
+        """Apply real-world LiDAR sensor noise: Gaussian range error + random dropout.
+        Noise magnitude is scaled by self.noise_scale (set by curriculum manager)."""
         if not self.real_world_noise:
             return lidar
         
-        # 1. Add Gaussian distance noise (std of 0.15 units, e.g., 15cm)
-        noise = self.np_random.normal(0.0, 0.15, size=lidar.shape).astype(np.float32)
+        # 1. Add Gaussian distance noise (std of 0.15 units, scaled by noise_scale)
+        noise_std = 0.15 * self.noise_scale
+        noise = self.np_random.normal(0.0, noise_std, size=lidar.shape).astype(np.float32)
         lidar_noisy = lidar + noise
         
-        # 2. Add random dropouts (1% chance to lose reflection and return max_range)
-        dropout_mask = self.np_random.random(size=lidar.shape) < 0.01
+        # 2. Add random dropouts (1% base chance, scaled by noise_scale)
+        dropout_rate = min(0.01 * self.noise_scale, 0.10)  # Cap at 10%
+        dropout_mask = self.np_random.random(size=lidar.shape) < dropout_rate
         lidar_noisy[dropout_mask] = self.max_range
         
         # 3. Clip to valid physical range [0.0, max_range]
@@ -312,10 +322,11 @@ class ActiveSLAMEnv(gym.Env):
         angular_vel = action[1] * 0.3  # max 0.3 rad/step
 
         # Apply actuator/kinematics execution noise (wheel slip / motor drift)
+        # Noise magnitude is scaled by self.noise_scale (set by curriculum manager)
         if self.real_world_noise:
             # We scale linear slip by magnitude of command and add small constant yaw drift
-            linear_slip = self.np_random.normal(0.0, 0.05 * abs(linear_vel))
-            angular_slip = self.np_random.normal(0.0, 0.02)
+            linear_slip = self.np_random.normal(0.0, 0.05 * abs(linear_vel) * self.noise_scale)
+            angular_slip = self.np_random.normal(0.0, 0.02 * self.noise_scale)
             actual_linear = linear_vel + linear_slip
             actual_angular = angular_vel + angular_slip
         else:
@@ -328,6 +339,8 @@ class ActiveSLAMEnv(gym.Env):
 
         # Collision check
         collision = self._is_collision(new_x, new_y)
+        if collision:
+            self._collision_count += 1
         if not collision:
             self._robot_x = new_x
             self._robot_y = new_y
@@ -374,6 +387,11 @@ class ActiveSLAMEnv(gym.Env):
         truncated = self._step_count >= self.max_steps
 
         obs = self._get_obs(lidar)
+        # Compute SLAM particle weight variance for health monitoring
+        slam_weight_variance = 0.0
+        if self.use_slam:
+            slam_weight_variance = float(np.var(self.slam.weights))
+
         info = {
             "scan_time_ms": self._scan_time_ms,
             "slam_time_ms": self._slam_time_ms,
@@ -381,9 +399,38 @@ class ActiveSLAMEnv(gym.Env):
             "new_cells": new_cells,
             "collision": collision,
             "steps": self._step_count,
+            "slam_weight_variance": slam_weight_variance,
+            "collision_count": self._collision_count,
         }
 
         return obs, reward, terminated, truncated, info
+
+    def set_difficulty_params(
+        self,
+        num_obstacles: int | None = None,
+        arena_size: float | None = None,
+        noise_scale: float | None = None,
+        max_steps: int | None = None,
+    ):
+        """
+        Dynamically adjust environment difficulty parameters.
+        Called by the CurriculumManager (Layer 4) at episode boundaries.
+        Changes take effect on the next reset() call.
+        
+        Args:
+            num_obstacles: Number of internal wall segments
+            arena_size:    Size of the square arena
+            noise_scale:   Multiplier on base sensor/actuator noise
+            max_steps:     Maximum steps per episode
+        """
+        if num_obstacles is not None:
+            self.num_obstacles = num_obstacles
+        if arena_size is not None:
+            self.arena_size = arena_size
+        if noise_scale is not None:
+            self.noise_scale = noise_scale
+        if max_steps is not None:
+            self.max_steps = max_steps
 
     def render(self):
         """Render the environment (matplotlib-based)."""
