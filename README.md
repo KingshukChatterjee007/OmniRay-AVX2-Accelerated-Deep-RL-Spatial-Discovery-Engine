@@ -6,6 +6,7 @@ A high-performance, pluggable raycasting engine, parallelized particle filter, a
 
 ## What is OmniRay? (Project Overview & Purpose)
 
+
 OmniRay is an advanced research testbed designed to solve the Active SLAM (Simultaneous Localization and Mapping) problem in mobile robotics using Deep Reinforcement Learning (Deep RL).
 
 ### The Problem it Solves
