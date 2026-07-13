@@ -329,21 +329,52 @@ def main():
     except Exception as e:
         print(f"        → PyMunk failed: {e}")
 
+    # --- Backend 4: C++ SIMD ---
+    print(f"\n  [4/4] C++ SIMD raycasting ({args.iterations} iterations)...")
+    try:
+        from envs.raycaster_backends import SimdRaycaster
+        simd_rc = SimdRaycaster(num_rays=args.rays, max_range=args.max_range)
+        simd_rc.set_walls(walls)
+        r = benchmark(
+            lambda rx, ry, rc, nr, mr: np.array(rc._engine.scan(rx, ry, 0.0).distances, dtype=np.float32),
+            (robot_x, robot_y, simd_rc, args.rays, args.max_range),
+            args.iterations, "C++ SIMD (AVX2)"
+        )
+        results.append(r)
+        print(f"        → {r['mean_ms']:.3f} ms/scan")
+    except Exception as e:
+        print(f"        → C++ SIMD failed: {e}")
+
     # Print results & decision
     print_results(results)
 
     # --- Bonus: Test reduced ray counts ---
     print("\n" + "-" * 78)
-    print("  Bonus: Ray count sensitivity (NumPy backend)")
+    print("  Bonus: Ray count sensitivity (NumPy vs C++ SIMD)")
     print("-" * 78)
     for n_rays in [64, 128, 256, 360, 720]:
-        r = benchmark(
+        r_np = benchmark(
             raytrace_numpy,
             (robot_x, robot_y, walls, n_rays, args.max_range),
             100, f"NumPy @ {n_rays} rays"
         )
-        est_100k = r["mean_ms"] * 100_000 / 1000 / 60
-        print(f"  {n_rays:>4} rays → {r['mean_ms']:.3f} ms/scan  (100K steps ≈ {est_100k:.0f} min)")
+        est_100k_np = r_np["mean_ms"] * 100_000 / 1000 / 60
+        
+        try:
+            from envs.raycaster_backends import SimdRaycaster
+            simd_rc = SimdRaycaster(num_rays=n_rays, max_range=args.max_range)
+            simd_rc.set_walls(walls)
+            r_simd = benchmark(
+                lambda rx, ry, rc, nr, mr: np.array(rc._engine.scan(rx, ry, 0.0).distances, dtype=np.float32),
+                (robot_x, robot_y, simd_rc, n_rays, args.max_range),
+                100, f"C++ SIMD @ {n_rays} rays"
+            )
+            est_100k_simd = r_simd["mean_ms"] * 100_000 / 1000 / 60
+            speedup = r_np["mean_ms"] / r_simd["mean_ms"]
+            print(f"  {n_rays:>4} rays → NumPy: {r_np['mean_ms']:.3f} ms/scan (100K ≈ {est_100k_np:.1f}m) | "
+                  f"SIMD: {r_simd['mean_ms']:.3f} ms/scan (100K ≈ {est_100k_simd:.1f}m) | Speedup: {speedup:.1f}x")
+        except Exception:
+            print(f"  {n_rays:>4} rays → NumPy: {r_np['mean_ms']:.3f} ms/scan (100K ≈ {est_100k_np:.1f}m) | SIMD: N/A")
 
     print("\n  Done! Use these numbers to decide your optimization path.\n")
 

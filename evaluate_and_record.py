@@ -41,7 +41,7 @@ def evaluate_agent(model_path: str, save_dir: str, num_rays: int, map_res: int, 
     # 1. Initialize environment with noise enabled
     print("  Initializing Gymnasium active SLAM environment with physical noise...")
     base_env = ActiveSLAMEnv(
-        backend="numpy",
+        backend="simd",
         num_rays=num_rays,
         map_resolution=map_res,
         max_steps=steps,

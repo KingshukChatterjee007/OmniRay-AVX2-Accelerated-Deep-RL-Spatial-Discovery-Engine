@@ -10,8 +10,12 @@ Usage:
 """
 
 import sys
+import os
 import numpy as np
 import time
+
+# Add project root to path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def test_simd_raycaster():
@@ -58,9 +62,9 @@ def test_simd_raycaster():
     assert len(distances) == num_rays, f"Expected {num_rays} rays, got {len(distances)}"
     assert np.all(distances > 0), "Distances should be positive"
     assert np.all(distances <= max_range), f"Distances should be <= {max_range}"
-    print(f"        ✅ Shape: {distances.shape}")
-    print(f"        ✅ Range: [{distances.min():.2f}, {distances.max():.2f}]")
-    print(f"        ✅ Mean:  {distances.mean():.2f}")
+    print(f"        [OK] Shape: {distances.shape}")
+    print(f"        [OK] Range: [{distances.min():.2f}, {distances.max():.2f}]")
+    print(f"        [OK] Mean:  {distances.mean():.2f}")
 
     # --- NumPy Reference Comparison ---
     print("\n  [2/3] Reference comparison (NumPy vs SIMD)...")
@@ -84,9 +88,9 @@ def test_simd_raycaster():
     print(f"        Mean difference: {mean_diff:.6f}")
     
     if max_diff < 0.1:
-        print("        ✅ Results match (tolerance < 0.1)")
+        print("        [OK] Results match (tolerance < 0.1)")
     else:
-        print("        ⚠️  Results diverge — check implementation")
+        print("        [WARNING] Results diverge — check implementation")
 
     # --- Performance ---
     print("\n  [3/3] Performance benchmark...")
@@ -115,13 +119,13 @@ def test_simd_raycaster():
           f"{np.median(simd_times):>9.3f}ms {np.percentile(simd_times, 99):>9.3f}ms")
     print(f"  {'NumPy Vectorized':<20} {numpy_mean:>9.3f}ms "
           f"{np.median(numpy_times):>9.3f}ms {np.percentile(numpy_times, 99):>9.3f}ms")
-    print(f"\n  ★ Speedup: {speedup:.1f}×")
+    print(f"\n  * Speedup: {speedup:.1f}x")
 
     est_100k_simd = simd_mean * 100_000 / 1000 / 60
     est_100k_numpy = numpy_mean * 100_000 / 1000 / 60
-    print(f"  100K training steps: SIMD ≈ {est_100k_simd:.0f} min, NumPy ≈ {est_100k_numpy:.0f} min")
+    print(f"  100K training steps: SIMD ~ {est_100k_simd:.0f} min, NumPy ~ {est_100k_numpy:.0f} min")
 
-    print("\n  Done! ✅\n")
+    print("\n  Done! [OK]\n")
     return True
 
 

@@ -52,7 +52,7 @@ class ActiveSLAMEnv(gym.Env):
 
     def __init__(
         self,
-        backend: str = "numpy",
+        backend: str = "simd",
         num_rays: int = 360,
         max_range: float = 30.0,
         arena_size: float = 100.0,
