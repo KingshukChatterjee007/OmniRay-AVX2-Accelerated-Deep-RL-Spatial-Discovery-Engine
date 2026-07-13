@@ -40,8 +40,8 @@ import numpy as np
 import gymnasium as gym
 from typing import Optional
 
-from envs.health_monitor import HealthMonitor
-from envs.adaptive_reward import AdaptiveRewardEngine, RewardComponents
+from envs.health_monitor import HealthMonitor, HealthDiagnostics
+from envs.adaptive_reward import AdaptiveRewardEngine, RewardComponents, RewardWeights
 from envs.curriculum import CurriculumManager
 
 
@@ -50,17 +50,21 @@ class AdaptiveActiveSLAMEnv(gym.Wrapper):
     Gymnasium Wrapper composing 5 self-adaptive layers around ActiveSLAMEnv.
     
     Args:
-        env:              Base ActiveSLAMEnv instance
-        config:           Adaptive config dict (from config.yaml 'adaptive' section)
-        enable_meta:      Enable Layer 3 meta-policy (default False)
-        enable_curriculum: Enable Layer 4 curriculum (default False)
-        enable_continual: Enable Layer 5 continual learning (default False)
+        env:                    Base ActiveSLAMEnv instance
+        config:                 Adaptive config dict (from config.yaml 'adaptive' section)
+        enable_health:          Enable Layer 1 health monitor (default True)
+        enable_adaptive_reward: Enable Layer 2 adaptive reward (default True)
+        enable_meta:            Enable Layer 3 meta-policy (default False)
+        enable_curriculum:      Enable Layer 4 curriculum (default False)
+        enable_continual:       Enable Layer 5 continual learning (default False)
     """
 
     def __init__(
         self,
         env: gym.Env,
         config: Optional[dict] = None,
+        enable_health: bool = True,
+        enable_adaptive_reward: bool = True,
         enable_meta: bool = False,
         enable_curriculum: bool = False,
         enable_continual: bool = False,
@@ -69,38 +73,44 @@ class AdaptiveActiveSLAMEnv(gym.Wrapper):
         self.config = config or {}
 
         # Feature flags
+        self._health_enabled = enable_health
+        self._adaptive_reward_enabled = enable_adaptive_reward
         self._meta_enabled = enable_meta
         self._curriculum_enabled = enable_curriculum
         self._continual_enabled = enable_continual
 
         # -----------------------------------------------------------
-        # Layer 1: Health Monitor (always active)
+        # Layer 1: Health Monitor (toggleable, default ON)
         # -----------------------------------------------------------
-        hm_config = self.config.get("health_monitor", {})
-        self.health_monitor = HealthMonitor(
-            ema_alpha=hm_config.get("ema_alpha", 0.05),
-            entropy_weight=hm_config.get("entropy_weight", 0.35),
-            coverage_weight=hm_config.get("coverage_weight", 0.40),
-            slam_weight=hm_config.get("slam_weight", 0.25),
-            window_size=hm_config.get("window_size", 50),
-        )
+        self.health_monitor = None
+        if self._health_enabled:
+            hm_config = self.config.get("health_monitor", {})
+            self.health_monitor = HealthMonitor(
+                ema_alpha=hm_config.get("ema_alpha", 0.05),
+                entropy_weight=hm_config.get("entropy_weight", 0.35),
+                coverage_weight=hm_config.get("coverage_weight", 0.40),
+                slam_weight=hm_config.get("slam_weight", 0.25),
+                window_size=hm_config.get("window_size", 50),
+            )
 
         # -----------------------------------------------------------
-        # Layer 2: Adaptive Reward Engine (always active)
+        # Layer 2: Adaptive Reward Engine (toggleable, default ON)
         # -----------------------------------------------------------
-        ar_config = self.config.get("adaptive_reward", {})
-        self.adaptive_reward = AdaptiveRewardEngine(
-            base_exploration=getattr(env, "reward_exploration", 1.0),
-            base_frontier=getattr(env, "reward_frontier", 0.1),
-            base_time_penalty=getattr(env, "reward_time_penalty", 0.01),
-            base_collision_penalty=getattr(env, "reward_collision_penalty", 0.1),
-            stuck_frontier_boost=ar_config.get("stuck_frontier_boost", 2.0),
-            low_entropy_curiosity=ar_config.get("low_entropy_curiosity", 0.2),
-            high_health_explore_reduction=ar_config.get("high_health_explore_reduction", 0.5),
-            lost_safety_penalty=ar_config.get("lost_safety_penalty", 0.3),
-            collision_rate_threshold=ar_config.get("collision_rate_threshold", 0.2),
-            collision_penalty_boost=ar_config.get("collision_penalty_boost", 3.0),
-        )
+        self.adaptive_reward = None
+        if self._adaptive_reward_enabled:
+            ar_config = self.config.get("adaptive_reward", {})
+            self.adaptive_reward = AdaptiveRewardEngine(
+                base_exploration=getattr(env, "reward_exploration", 1.0),
+                base_frontier=getattr(env, "reward_frontier", 0.1),
+                base_time_penalty=getattr(env, "reward_time_penalty", 0.01),
+                base_collision_penalty=getattr(env, "reward_collision_penalty", 0.1),
+                stuck_frontier_boost=ar_config.get("stuck_frontier_boost", 2.0),
+                low_entropy_curiosity=ar_config.get("low_entropy_curiosity", 0.2),
+                high_health_explore_reduction=ar_config.get("high_health_explore_reduction", 0.5),
+                lost_safety_penalty=ar_config.get("lost_safety_penalty", 0.3),
+                collision_rate_threshold=ar_config.get("collision_rate_threshold", 0.2),
+                collision_penalty_boost=ar_config.get("collision_penalty_boost", 3.0),
+            )
 
         # -----------------------------------------------------------
         # Layer 3: Meta-Policy (optional)
@@ -196,20 +206,25 @@ class AdaptiveActiveSLAMEnv(gym.Wrapper):
             entropy_value=self._policy_entropy,
         )
 
-        # 2. Health Monitor update
-        slam_weights = None
-        if hasattr(self.env, "use_slam") and self.env.use_slam and hasattr(self.env, "slam"):
-            slam_weights = self.env.slam.weights
+        # 2. Health Monitor update (if enabled)
+        health = None
+        if self._health_enabled and self.health_monitor is not None:
+            slam_weights = None
+            if hasattr(self.env, "use_slam") and self.env.use_slam and hasattr(self.env, "slam"):
+                slam_weights = self.env.slam.weights
 
-        health = self.health_monitor.update(
-            coverage_ratio=info.get("coverage", 0.0),
-            slam_weights=slam_weights,
-            policy_entropy=self._policy_entropy,
-        )
+            health = self.health_monitor.update(
+                coverage_ratio=info.get("coverage", 0.0),
+                slam_weights=slam_weights,
+                policy_entropy=self._policy_entropy,
+            )
+        else:
+            # Neutral health diagnostics when health monitor is disabled
+            health = HealthDiagnostics()
 
-        # 3. Meta-Policy prediction (if enabled)
+        # 3. Meta-Policy prediction (if enabled, requires health)
         weight_overrides = None
-        if self._meta_enabled and self.meta_policy is not None:
+        if self._meta_enabled and self.meta_policy is not None and self._health_enabled:
             steps_fraction = self._episode_steps / max(getattr(self.env, "max_steps", 200), 1)
             weight_overrides = self.meta_policy.predict(health, steps_fraction)
             if not weight_overrides:  # Empty dict means still in warmup
@@ -218,17 +233,22 @@ class AdaptiveActiveSLAMEnv(gym.Wrapper):
             # Feed health back to meta-policy for REINFORCE update
             self.meta_policy.record_health(health.score)
 
-        # 4. Adaptive Reward computation
-        adjusted_reward, active_weights = self.adaptive_reward.compute(
-            components=components,
-            health=health,
-            weight_overrides=weight_overrides,
-        )
+        # 4. Adaptive Reward computation (if enabled)
+        if self._adaptive_reward_enabled and self.adaptive_reward is not None:
+            adjusted_reward, active_weights = self.adaptive_reward.compute(
+                components=components,
+                health=health,
+                weight_overrides=weight_overrides,
+            )
+        else:
+            # Pass through base reward unmodified
+            adjusted_reward = base_reward
+            active_weights = RewardWeights()  # Default (1.0 scales, no bonuses)
 
         # Track episode reward
         self._episode_reward += adjusted_reward
 
-        # 5. Enrich info dict with adaptive diagnostics
+        # 5. Enrich info dict with adaptive diagnostics (always logged)
         info["health_score"] = health.score
         info["health_entropy"] = health.entropy_health
         info["health_coverage"] = health.coverage_health
@@ -238,6 +258,8 @@ class AdaptiveActiveSLAMEnv(gym.Wrapper):
         info["reward_weights"] = active_weights.to_dict()
         info["adaptive_reward"] = adjusted_reward
         info["base_reward"] = base_reward
+        info["health_enabled"] = self._health_enabled
+        info["adaptive_reward_enabled"] = self._adaptive_reward_enabled
 
         if self._meta_enabled and self.meta_policy is not None:
             info["meta_policy_active"] = self.meta_policy.is_active
@@ -295,8 +317,10 @@ class AdaptiveActiveSLAMEnv(gym.Wrapper):
         obs, info = self.env.reset(seed=seed, options=options)
 
         # 3. Reset adaptive layers
-        self.health_monitor.reset()
-        self.adaptive_reward.reset()
+        if self._health_enabled and self.health_monitor is not None:
+            self.health_monitor.reset()
+        if self._adaptive_reward_enabled and self.adaptive_reward is not None:
+            self.adaptive_reward.reset()
         if self._meta_enabled and self.meta_policy is not None:
             self.meta_policy.reset()
 
@@ -353,7 +377,17 @@ class AdaptiveActiveSLAMEnv(gym.Wrapper):
         """
         stats = {
             "episode_count": self._episode_count,
-            "health": {
+            "layers_enabled": {
+                "health": self._health_enabled,
+                "adaptive_reward": self._adaptive_reward_enabled,
+                "meta_policy": self._meta_enabled,
+                "curriculum": self._curriculum_enabled,
+                "continual": self._continual_enabled,
+            },
+        }
+
+        if self._health_enabled and self.health_monitor is not None:
+            stats["health"] = {
                 "score": self.health_monitor.health_score,
                 "is_failing": self.health_monitor.is_failing,
                 "diagnostics": {
@@ -362,12 +396,17 @@ class AdaptiveActiveSLAMEnv(gym.Wrapper):
                     "slam": self.health_monitor.diagnostics.slam_health,
                     "velocity": self.health_monitor.diagnostics.coverage_velocity,
                 },
-            },
-            "reward": {
+            }
+        else:
+            stats["health"] = {"score": 0.5, "is_failing": False, "diagnostics": {}}
+
+        if self._adaptive_reward_enabled and self.adaptive_reward is not None:
+            stats["reward"] = {
                 "weights": self.adaptive_reward.current_weights.to_dict(),
                 "collision_rate": self.adaptive_reward.collision_rate,
-            },
-        }
+            }
+        else:
+            stats["reward"] = {"weights": {}, "collision_rate": 0.0}
 
         if self._meta_enabled and self.meta_policy is not None:
             stats["meta_policy"] = self.meta_policy.get_stats()

@@ -261,9 +261,14 @@ def train():
     
     # Self-Adaptive Autonomy System flags
     parser.add_argument("--adaptive", action="store_true", help="Enable the 5-layer self-adaptive autonomy system")
+    parser.add_argument("--no-health", action="store_true", help="Disable Layer 1 health monitor (requires --adaptive)")
+    parser.add_argument("--no-adaptive-reward", action="store_true", help="Disable Layer 2 adaptive reward (requires --adaptive)")
     parser.add_argument("--meta-policy", action="store_true", help="Enable Layer 3 meta-policy (requires --adaptive)")
     parser.add_argument("--curriculum", action="store_true", help="Enable Layer 4 curriculum auto-difficulty (requires --adaptive)")
     parser.add_argument("--continual", action="store_true", help="Enable Layer 5 continual learning (requires --adaptive)")
+    
+    # Reproducibility
+    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility (seeds PyTorch, NumPy, env)")
     args = parser.parse_args()
 
     # Load configuration file
@@ -298,9 +303,18 @@ def train():
     # Adaptive system configuration
     adaptive_config = config.get("adaptive", {})
     use_adaptive = args.adaptive or adaptive_config.get("enabled", False)
+    use_health = not args.no_health  # Layer 1: default ON when adaptive is enabled
+    use_adaptive_reward = not args.no_adaptive_reward  # Layer 2: default ON when adaptive is enabled
     use_meta = args.meta_policy or adaptive_config.get("meta_policy", {}).get("enabled", False)
     use_curriculum = args.curriculum or adaptive_config.get("curriculum", {}).get("enabled", False)
     use_continual = args.continual or adaptive_config.get("continual_learning", {}).get("enabled", False)
+    
+    # Seed initialization for reproducibility
+    seed = args.seed
+    if seed is not None:
+        from stable_baselines3.common.utils import set_random_seed
+        set_random_seed(seed)
+        print(f"  [SEED] Random seed set to {seed} (PyTorch, NumPy, env)")
 
     print("=" * 70)
     print("  OmniRay Active SLAM Deep RL Trainer")
@@ -321,18 +335,20 @@ def train():
     print(f"  Front Reward:     {rew_front}")
     if use_adaptive:
         print(f"  Adaptive System:  ENABLED")
-        print(f"    ├─ Health Monitor:   ACTIVE")
-        print(f"    ├─ Adaptive Reward:  ACTIVE")
+        print(f"    ├─ Health Monitor:   {'ACTIVE' if use_health else 'DISABLED'}")
+        print(f"    ├─ Adaptive Reward:  {'ACTIVE' if use_adaptive_reward else 'DISABLED'}")
         print(f"    ├─ Meta-Policy:      {'ACTIVE' if use_meta else 'DISABLED'}")
         print(f"    ├─ Curriculum:       {'ACTIVE' if use_curriculum else 'DISABLED'}")
         print(f"    └─ Continual Learn:  {'ACTIVE' if use_continual else 'DISABLED'}")
     else:
         print(f"  Adaptive System:  DISABLED (use --adaptive to enable)")
+    if seed is not None:
+        print(f"  Seed:             {seed}")
     print("-" * 70)
 
     # Initialize base environment
     base_env = ActiveSLAMEnv(
-        backend="numpy",
+        backend="simd",
         num_rays=num_rays,
         map_resolution=map_res,
         use_slam=use_slam,
@@ -351,6 +367,8 @@ def train():
         adaptive_env = AdaptiveActiveSLAMEnv(
             env=base_env,
             config=adaptive_config,
+            enable_health=use_health,
+            enable_adaptive_reward=use_adaptive_reward,
             enable_meta=use_meta,
             enable_curriculum=use_curriculum,
             enable_continual=use_continual,
@@ -450,6 +468,48 @@ def train():
         
         # Save model
         model.save(args.save_path)
+        
+        # Write structured JSON result file for ablation analysis
+        import json
+        result_data = {
+            "config": {
+                "seed": seed,
+                "total_steps": total_steps,
+                "num_rays": num_rays,
+                "map_resolution": map_res,
+                "use_slam": use_slam,
+                "learning_rate": lr,
+                "ent_coef": ent_coef,
+                "real_world_noise": real_world_noise,
+                "reward_exploration": rew_exp,
+                "reward_time_penalty": rew_time,
+                "reward_collision_penalty": rew_col,
+                "reward_frontier": rew_front,
+                "backend": "simd",
+                "adaptive": use_adaptive,
+                "layers": {
+                    "health_monitor": use_health if use_adaptive else False,
+                    "adaptive_reward": use_adaptive_reward if use_adaptive else False,
+                    "meta_policy": use_meta if use_adaptive else False,
+                    "curriculum": use_curriculum if use_adaptive else False,
+                    "continual": use_continual if use_adaptive else False,
+                },
+            },
+            "results": {
+                "wall_clock_seconds": duration,
+                "save_path": f"{args.save_path}.zip",
+            },
+        }
+        
+        # Add adaptive stats if available
+        if use_adaptive and adaptive_env is not None:
+            result_data["results"]["adaptive_stats"] = adaptive_env.get_adaptive_stats()
+        
+        result_json_path = f"{args.save_path}_results.json"
+        with open(result_json_path, "w") as f:
+            json.dump(result_data, f, indent=2, default=str)
+        print(f"  📊 Results saved to: {result_json_path}")
+
     except KeyboardInterrupt:
         print("\n  [WARNING] Training interrupted by user. Saving checkpoint...")
         model.save(f"{args.save_path}_interrupted")
