@@ -1,0 +1,21 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# C++ Build directories
+sim/build/
+build/
+CMakeFiles/
+CMakeCache.txt
+*.cmake
+
+# Compiled python modules
+*.pyd
+*.so
+*.dll
+
+# RL Checkpoints & Results
+checkpoints/
+results/
+*.zip
+*.json

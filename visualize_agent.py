@@ -36,7 +36,7 @@ def visualize(model_path: str, num_rays: int, map_res: int, episodes: int, max_s
     # 1. Create the render-enabled environment
     print("  Initializing Gymnasium active SLAM environment...")
     env = ActiveSLAMEnv(
-        backend="numpy",
+        backend="simd",
         num_rays=num_rays,
         map_resolution=map_res,
         max_steps=max_steps,

@@ -183,7 +183,7 @@ BACKENDS = {
 
 
 def create_raycaster(
-    backend: str = "numpy",
+    backend: str = "simd",
     num_rays: int = 360,
     max_range: float = 30.0,
 ) -> RaycasterBase:
@@ -200,4 +200,13 @@ def create_raycaster(
     """
     if backend not in BACKENDS:
         raise ValueError(f"Unknown backend '{backend}'. Choose from: {list(BACKENDS.keys())}")
+    
+    if backend == "simd":
+        try:
+            return SimdRaycaster(num_rays=num_rays, max_range=max_range)
+        except ImportError as e:
+            print(f"[WARNING] C++ SIMD backend failed to import: {e}")
+            print("Falling back to 'numpy' backend.")
+            return NumpyRaycaster(num_rays=num_rays, max_range=max_range)
+
     return BACKENDS[backend](num_rays=num_rays, max_range=max_range)
